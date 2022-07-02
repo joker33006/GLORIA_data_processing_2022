@@ -1,0 +1,117 @@
+---
+title: "GLORIA EVI"
+output: WORD
+---
+# GLORIA EVI數值處理
+## 概述
+將從Google earth engine 上下載下來的Terra 16D EVI資料下載下來，並將資料平滑化後，再用內插法將資料解析度提高到每週。再用時間序列的分解法將資料分解成長期變動趨勢、季節變動趨勢以及隨機變動。
+
+Step 0. package集中處
+
+```{r}
+library(data.table)
+library(imputeTS) #time serise
+library(readr) # convert the text to number
+library(ggplot2)
+Sys.setlocale("LC_TIME", "English")
+```
+設定路徑
+```{r}
+path <- "H:/我的雲端硬碟/研究室計畫/GLORIA_個人處理/2022"
+```
+
+
+### Step 1. 資料載入與初步處理
+將資料載入並將日期資料轉換，並把資料品質不佳(AQ>2)的資料剃除。使用loess function 將EVI平滑化，加入各山峰編號，最後合併各山峰的EVI。
+
+```{r}
+comb_evi <- function(name,path){
+Sys.setlocale("LC_TIME", "English") #時間設置成英文
+  require(data.table)
+  require(imputeTS)
+  require(readr)
+    evi_t <- fread(paste0(path,"/Terra_16D_2003_2022_",name,".csv"))
+    evi_a <- fread(paste0(path,"/Aqua_16D_2003_2022_",name,".csv"))
+    evi <- rbind(evi_t,evi_a)
+    colnames(evi)<-c('time','EVI','AQ')
+    evi_sel <- evi[,date:=as.Date(time,format="%b %d, %Y")][
+      order(date)][AQ<2,][
+      ,EVI:=parse_number(EVI)/10000][
+        EVI!=""]
+    evi_sel[,EVI.sm:=loess(EVI~as.numeric(date),data=evi_sel,span=0.05)$fit]
+    evi_sel[,summit:=name]
+    return(evi_sel)
+    }
+evi_rpath <- paste0(path,"/rawdata/EVI")
+
+summit_name <- c("JIA","MIN","HUU")
+evi <- lapply(summit_name,comb_evi,path=evi_rpath)
+
+evi_r <- rbindlist(evi) #combining all EVI and EVI.sm of each summit to a table.
+
+```
+
+
+## Step. 2 時間序列
+概述：將EVI資料提高解析度為週資料(原始為16天，使用內插法interplation提高解析)。提高解析之目的是為了將每年的循環週期訂在一致的52.143。利用decompose 的 additive model將EVI.sm拆成長期趨勢(Trend)季節變動(seasonal trend)以及隨機項(random)。
+延續資料`evi_r`與`name_list`
+```{r}
+W <- as.data.table(seq(as.Date('2003-01-01'),as.Date('2020-12-31'),by='weeks'))
+W[,yyww:=paste0(year(V1),'-',week(V1))] 
+setkey(W,yyww)
+ts_r_list <- NULL
+for(i in 1:length(name_list)){
+  #### Increasing data resolution to weekly
+  evi_r[,yyww:=paste0(year(date),'-',week(date))]
+  
+  rd_w <- evi_r[summit==name_list[i],][W,on=.(yyww=yyww)][order(V1)]
+ 
+ rd_w[,EVI_rNA:=na_interpolation(EVI)]
+ rd_w[,EVI_wsm:=na_interpolation(EVI.sm)]
+ rd_w[is.na(summit),summit:=name_list[i]]
+ rd_ts <- ts(rd_w[,EVI_wsm],frequency =52.143,start = c(2003,1))
+ ts_r = decompose(rd_ts, "additive")
+
+ ts_r_list[[i]] <- data.table(rd_w[,.(date,summit,yyww,V1,EVI_rNA)],
+             EVI_sm=ts_r$x,season=ts_r$seasonal,trend=ts_r$trend,random=ts_r$random)
+ }
+r <- rbindlist(ts_r_list)
+ setnames(r,"V1",'date_w')
+write.csv(r,'ts_result/ts_r.csv')
+```
+## Step 3. 繪圖
+繼承資料為最後統整資料`r``
+概述：將表格中各山峰加上區域(region)
+
+```{r}
+r[summit %in% c("QNS","QSS","SMN"),region:="HQM"][
+  summit %in% c("LIN","SMZ","ZNF"),region:="NAH"]
+#### EVI smoothly value plot
+r[,year:=year(date)]
+for (i in c("HQM","NAH")){
+#### EVI smoothly value plot
+  p1 <- ggplot(data=r[region==`i`],aes(x=date_w,y=EVI_sm,color=summit))+
+  geom_line(size=0.5)+
+  theme_classic()+
+  labs(x="Year",y="EVI smoothly value",color="Summit")+
+  scale_x_date(breaks="2 year",date_labels = "%Y")+
+  ylim(c(0,0.6))
+  ggsave(paste0("plot_result/",i,"_EVI_smoothly_value.jpg"),plot=p1,width=8,height=4,dpi=300)
+#### EVI trend value plot
+p2 <- ggplot(data=r[region==`i`],aes(x=date_w,y=trend,color=summit))+
+  geom_line(size=0.5)+
+  theme_classic()+
+  labs(x="Year",y="EVI trend",color="Summit")+
+  scale_x_date(breaks="2 year",date_labels = "%Y")
+ggsave(paste0("plot_result/",i,"_EVI_trend.jpg"),plot=p2,width=8,height=4,dpi=300)
+#### EVI season value plot
+
+p3 <- ggplot(data=r[region==`i`&year==2015],aes(x=date_w,y=season,color=summit))+
+  geom_line(size=0.5)+
+  theme_classic()+
+  labs(x="Year",y="EVI seasonal trend",color="Summit")+
+  scale_x_date(breaks="month",date_labels = "%b")
+ggsave(paste0("plot_result/",i,"_EVI_season.jpg"),plot=p3,width=6,height=4,dpi=300)
+}
+```
+
