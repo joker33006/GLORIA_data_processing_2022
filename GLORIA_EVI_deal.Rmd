@@ -47,71 +47,92 @@ evi_rpath <- paste0(path,"/rawdata/EVI")
 summit_name <- c("JIA","MIN","HUU")
 evi <- lapply(summit_name,comb_evi,path=evi_rpath)
 
-evi_r <- rbindlist(evi) #combining all EVI and EVI.sm of each summit to a table.
+
 
 ```
 
 
 ## Step. 2 時間序列
 概述：將EVI資料提高解析度為週資料(原始為16天，使用內插法interplation提高解析)。提高解析之目的是為了將每年的循環週期訂在一致的52.143。利用decompose 的 additive model將EVI.sm拆成長期趨勢(Trend)季節變動(seasonal trend)以及隨機項(random)。
-延續資料`evi_r`與`name_list`
+延續資料`evi`與`summit_name`
 ```{r}
-W <- as.data.table(seq(as.Date('2003-01-01'),as.Date('2020-12-31'),by='weeks'))
+W <- as.data.table(seq(as.Date('2003-01-01'),as.Date('2022-5-31'),by='weeks'))
 W[,yyww:=paste0(year(V1),'-',week(V1))] 
 setkey(W,yyww)
-ts_r_list <- NULL
-for(i in 1:length(name_list)){
+evi_r <- lapply(evi,function(x){
   #### Increasing data resolution to weekly
-  evi_r[,yyww:=paste0(year(date),'-',week(date))]
-  
-  rd_w <- evi_r[summit==name_list[i],][W,on=.(yyww=yyww)][order(V1)]
- 
+  name <- unique(x$summit)
+  x[,yyww:=paste0(year(date),'-',week(date))]
+  rd_w <- x[W,on=.(yyww=yyww)][order(V1)]
  rd_w[,EVI_rNA:=na_interpolation(EVI)]
  rd_w[,EVI_wsm:=na_interpolation(EVI.sm)]
- rd_w[is.na(summit),summit:=name_list[i]]
+ rd_w[is.na(summit),summit:=name]
  rd_ts <- ts(rd_w[,EVI_wsm],frequency =52.143,start = c(2003,1))
  ts_r = decompose(rd_ts, "additive")
 
- ts_r_list[[i]] <- data.table(rd_w[,.(date,summit,yyww,V1,EVI_rNA)],
+ ts_r_list <- data.table(rd_w[,.(date,summit,yyww,V1,EVI_rNA)],
              EVI_sm=ts_r$x,season=ts_r$seasonal,trend=ts_r$trend,random=ts_r$random)
- }
-r <- rbindlist(ts_r_list)
- setnames(r,"V1",'date_w')
-write.csv(r,'ts_result/ts_r.csv')
+ return(ts_r_list)
+ })
+
+r <- rbindlist(evi_r)
+setnames(r,"V1",'date_w')
+write.csv(r,paste0(path,'/result/EVI_ts_r.csv'))
 ```
 ## Step 3. 繪圖
 繼承資料為最後統整資料`r``
 概述：將表格中各山峰加上區域(region)
 
 ```{r}
-r[summit %in% c("QNS","QSS","SMN"),region:="HQM"][
-  summit %in% c("LIN","SMZ","ZNF"),region:="NAH"]
+r[summit %in% summit_name,region:="SAC"]
+r[,.(mean(EVI_sm)),by=.(summit)]
 #### EVI smoothly value plot
 r[,year:=year(date)]
-for (i in c("HQM","NAH")){
+for (i in c("SAC")){
 #### EVI smoothly value plot
-  p1 <- ggplot(data=r[region==`i`],aes(x=date_w,y=EVI_sm,color=summit))+
+p1 <- ggplot(r[region==`i`],aes(x=date_w,y=EVI_sm,color=summit))+
   geom_line(size=0.5)+
   theme_classic()+
   labs(x="Year",y="EVI smoothly value",color="Summit")+
   scale_x_date(breaks="2 year",date_labels = "%Y")+
-  ylim(c(0,0.6))
-  ggsave(paste0("plot_result/",i,"_EVI_smoothly_value.jpg"),plot=p1,width=8,height=4,dpi=300)
+ scale_color_brewer(palette="Set2")
+  ggsave(paste0(paste0(path,"/result/plot/",i,"_EVI_smoothly_value.jpg")),plot=p1,width=8,height=4,dpi=300)
 #### EVI trend value plot
-p2 <- ggplot(data=r[region==`i`],aes(x=date_w,y=trend,color=summit))+
+p2 <- ggplot(r[region==`i`],aes(x=date_w,y=trend,color=summit))+
   geom_line(size=0.5)+
   theme_classic()+
   labs(x="Year",y="EVI trend",color="Summit")+
-  scale_x_date(breaks="2 year",date_labels = "%Y")
-ggsave(paste0("plot_result/",i,"_EVI_trend.jpg"),plot=p2,width=8,height=4,dpi=300)
+  scale_x_date(breaks="2 year",date_labels = "%Y")+
+  scale_color_brewer(palette="Set2")
+ggsave(paste0(path,"/result/plot/",i,"_EVI_trend.jpg"),plot=p2,width=8,height=4,dpi=300)
+
 #### EVI season value plot
 
 p3 <- ggplot(data=r[region==`i`&year==2015],aes(x=date_w,y=season,color=summit))+
   geom_line(size=0.5)+
   theme_classic()+
   labs(x="Year",y="EVI seasonal trend",color="Summit")+
-  scale_x_date(breaks="month",date_labels = "%b")
-ggsave(paste0("plot_result/",i,"_EVI_season.jpg"),plot=p3,width=6,height=4,dpi=300)
+  scale_x_date(breaks="month",date_labels = "%b")+
+  scale_color_brewer(palette="Set2")
+ggsave(paste0(path,"/result/plot/",i,"_EVI_season.jpg"),plot=p3,width=6,height=4,dpi=300)
+
+p4 <- ggplot(r[region==`i`],aes(x=date_w,y=random,fill=summit))+
+  geom_col(size=0.5)+
+  theme_classic()+
+  labs(x="Year",y="EVI random term",fill="Summit")+
+  scale_x_date(breaks="2 year",date_labels = "%Y")+
+  scale_fill_brewer(palette="Set2")+
+  facet_grid(summit~.)
+ggsave(paste0(path,"/result/plot/",i,"_EVI_random.jpg"),plot=p4,width=8,height=4,dpi=300)
 }
+### 調整趨勢圖與月水分供應量做比較
+ggplot(r[region==`i`],aes(x=date_w,y=trend,color=summit))+
+  geom_line(size=0.5)+
+  theme_classic()+
+  labs(x="Year",y="EVI trend",color="Summit")+
+  scale_x_date(breaks="2 year",date_labels = "%Y")+
+  scale_color_brewer(palette="Set2")
+ggsave(paste0(path,"/result/plot/",i,"_EVI_trend_2.jpg"),plot=p2,width=8,height=2,dpi=300)
+
 ```
 
